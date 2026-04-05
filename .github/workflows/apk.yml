@@ -197,7 +197,8 @@ jobs:
         git config --local user.name "github-actions[bot]"
         git config --local user.email "41898282+github-actions@users.noreply.github.com"
         git add .
-        git commit -m "${{ env.tag }}"
+        # 【容错修改】加 || 逻辑
+        git commit -m "${{ env.tag }}" || echo "无文件变更，跳过提交"
         git branch -M main
         git remote add origin https://github-action:$GITHUB_TOKEN@github.com/wangdf852/NbWrt-openwrt-rax3000m
         git push -u origin main --force
