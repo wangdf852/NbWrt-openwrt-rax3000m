@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        device: ["rax3000m-emmc"]
+        device: ["rax3000m-nand"]
         source: ["openwrt"]
         include:
-          - device: "rax3000m-emmc"
-            config: "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-emmc=y"
+          - device: "rax3000m-nand"
+            config: "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-nand=y"
 
 
     steps: 
