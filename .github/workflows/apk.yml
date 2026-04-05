@@ -6,7 +6,6 @@ on:
   repository_dispatch:
   workflow_dispatch:
 
-
 env:
   DIY_P1_SH: sh/op.sh
 
@@ -22,8 +21,7 @@ jobs:
           - device: "rax3000m-nand"
             config: "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-nand=y"
 
-
-    steps: 
+    steps:
     - name: 检查分支
       uses: actions/checkout@v6
 
@@ -70,43 +68,53 @@ jobs:
       run: |
         df -hT $PWD
         git clone $REPO_URL $SOURCE_NAME
+        rm -rf $GITHUB_WORKSPACE/$SOURCE_NAME
         ln -sf /workdir/$SOURCE_NAME $GITHUB_WORKSPACE/$SOURCE_NAME
-        
+        if [ ! -L $GITHUB_WORKSPACE/$SOURCE_NAME ] || [ ! -d $GITHUB_WORKSPACE/$SOURCE_NAME ]; then
+          echo "Error: 软链接创建失败" && exit 1
+        fi
+
     - name: 切换分支
       run: |
         cd $SOURCE_NAME
         case $REPO_BRANCH in
           openwrt-25.12)
             _release_tag=$(git tag --sort=taggerdate --list 'v25.*' | tail -1)
-            git checkout $_release_tag
+            if [ -z "$_release_tag" ]; then
+              echo "Error: 未找到v25.*标签" && exit 1
+            fi
+            git checkout $_release_tag || { echo "checkout标签失败"; exit 1; }
             _prerelease=false
             ;;
           *)
-            echo "Can't get local/upstream's branch/tags"
+            echo "Error: 不支持的分支" && exit 1
             ;;
         esac
-        echo "release_tag=$_release_tag" >> $GITHUB_ENV    
-        
+        echo "release_tag=$_release_tag" >> $GITHUB_ENV
+
     - name: 取回缓存 staging_dir
       uses: actions/cache@v5
       with:
         path: |
           ${{ matrix.source }}/staging_dir
-        key: ${{ matrix.source }}-toolchain-cache
+        key: ${{ matrix.source }}-${{ matrix.device }}-${{ env.release_tag }}-toolchain-cache
         restore-keys: |
-          ${{ matrix.source }}-toolchain-cache
-            
+          ${{ matrix.source }}-${{ matrix.device }}-
+          ${{ matrix.source }}-
+
     - name: patch修补
       run: |
         set -x
         cd $SOURCE_NAME
-        find ./staging_dir/ -name '*' -exec touch {} \; >/dev/null 2>&1
+        if [ -d "./staging_dir/" ]; then
+          find ./staging_dir/ -type f -exec touch {} + >/dev/null 2>&1 || true
+        fi
         ./scripts/feeds update -a
-        cd .. 
+        cd ..
         [ -e patch ] && cp -rf patch/diy/*.patch $SOURCE_NAME
         [ -e patch ] && cp -rf patch/luci/*.patch $SOURCE_NAME/feeds/luci
         [ -e patch ] && cp -rf patch/keys/* $SOURCE_NAME
-        
+
     - name: 加载自定义脚本
       run: |
         chmod +x $DIY_P1_SH
@@ -115,7 +123,7 @@ jobs:
         cd ..
         [ -e patch ] && cp -rf patch/nginx/luci.locations $SOURCE_NAME/feeds/packages/net/nginx/files-luci-support
         [ -e patch ] && cp -rf patch/nginx/uci.conf.template $SOURCE_NAME/feeds/packages/net/nginx-util/files
-       
+
     - name: 加载自定义配置
       run: |
         [ -e files ] && mv files $SOURCE_NAME/files
@@ -124,10 +132,8 @@ jobs:
         CONFIG_TARGET_mediatek_filogic=y
         ${{ matrix.config }}
         EOF
-        
         [ -e config ] && cat config/config-apk >> $SOURCE_NAME/.config
-          
-    
+
     - name: 下载编译依赖
       id: package
       run: |
@@ -136,13 +142,19 @@ jobs:
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
-    
+
     - name: 编译源码
       id: compile
+      timeout-minutes: 140
       run: |
         cd $SOURCE_NAME
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        FREE_GB=$(df -P /workdir | awk 'NR==2 {print $4/1024/1024}')
+        if (( $(echo "$FREE_GB < 10" | bc -l) )); then
+          echo "Error: 磁盘空间不足" && exit 1
+        fi
+        CORES=$(( $(nproc) - 1 ))
+        echo -e "$CORES 线程编译"
+        make -j$CORES V=s || make -j1 V=s
 
     - name: 查看磁盘使用情况
       if: (!cancelled())
@@ -152,27 +164,29 @@ jobs:
       id: organize
       run: |
         mkdir -p $SOURCE_NAME/bin/packages/aarch64_cortex-a53/kmod
-        cp -rf $SOURCE_NAME/bin/targets/*/*/*/* $SOURCE_NAME/bin/packages/aarch64_cortex-a53/kmod
+        cp -rf $SOURCE_NAME/bin/targets/*/*/*/* $SOURCE_NAME/bin/packages/aarch64_cortex-a53/kmod || true
         rm -rf $SOURCE_NAME/bin/packages/*/routing
         rm -rf $SOURCE_NAME/bin/packages/*/telephony
-        cd $SOURCE_NAME/bin/targets/*/*
-        rm -rf packages
-        rm -rf *.buildinfo
-        rm -rf profiles.json
-        rm -rf *.manifest
-        rm -rf *bl2.bin
-        rm -rf *kernel.bin
-        rm -rf *.sha
-        rm -rf sha256sums
+
+        TARGET_DIR=$(find $SOURCE_NAME/bin/targets -type d -path "*/mediatek/filogic" | head -1)
+        if [ -z "$TARGET_DIR" ]; then
+          echo "Error: 未找到编译目录" && exit 1
+        fi
+        cd $TARGET_DIR
+        rm -rf packages *.buildinfo profiles.json *.manifest *bl2.bin *kernel.bin *.sha sha256sums
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        
+
     - name: 签名
       run: |
         cd $SOURCE_NAME
-        bash kmod-sign bin/packages/aarch64_cortex-a53/base
-        bash kmod-sign bin/packages/aarch64_cortex-a53/kmod
-        bash kmod-sign bin/packages/aarch64_cortex-a53/luci
-        bash kmod-sign bin/packages/aarch64_cortex-a53/packages
+        if [ ! -f "kmod-sign" ]; then
+          echo "Error: 缺少签名脚本" && exit 1
+        fi
+        chmod +x kmod-sign
+        bash kmod-sign bin/packages/aarch64_cortex-a53/base || exit 1
+        bash kmod-sign bin/packages/aarch64_cortex-a53/kmod || exit 1
+        bash kmod-sign bin/packages/aarch64_cortex-a53/luci || exit 1
+        bash kmod-sign bin/packages/aarch64_cortex-a53/packages || exit 1
 
     - name: 上传apk
       env:
@@ -181,7 +195,7 @@ jobs:
         cd $SOURCE_NAME/bin/packages
         git init
         git config --local user.name "github-actions[bot]"
-        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git config --local user.email "41898282+github-actions@users.noreply.github.com"
         git add .
         git commit -m "${{ env.tag }}"
         git branch -M main
