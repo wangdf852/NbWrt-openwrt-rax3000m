@@ -93,11 +93,14 @@ jobs:
         case $REPO_BRANCH in
           openwrt-25.12)
             _release_tag=$(git tag --sort=taggerdate --list 'v25.*' | tail -1)
-            git checkout $_release_tag
+            if [ -z "$_release_tag" ]; then
+              echo "Error: 未找到v25.*标签" && exit 1
+            fi
+            git checkout $_release_tag || { echo "checkout标签失败"; exit 1; }
             _prerelease=false
             ;;
           *)
-            echo "Can't get local/upstream's branch/tags"
+            echo "Error: 不支持的分支" && exit 1
             ;;
         esac
         echo "release_tag=$_release_tag" >> $GITHUB_ENV  
@@ -107,15 +110,20 @@ jobs:
       with:
         path: |
           ${{ matrix.source }}/staging_dir
-        key: ${{ matrix.source }}-toolchain-cache
+        # 修复缓存key：按设备+版本隔离，避免缓存污染
+        key: ${{ matrix.source }}-${{ matrix.device }}-${{ env.release_tag }}-toolchain-cache
         restore-keys: |
-          ${{ matrix.source }}-toolchain-cache
+          ${{ matrix.source }}-${{ matrix.device }}-
+          ${{ matrix.source }}-
             
     - name: patch修补
       run: |
         set -x
         cd $SOURCE_NAME
-        find ./staging_dir/ -name '*' -exec touch {} \; >/dev/null 2>&1
+        # 修复find命令：增加目录判断，避免空目录报错
+        if [ -d "./staging_dir/" ]; then
+          find ./staging_dir/ -type f -exec touch {} + >/dev/null 2>&1 || true
+        fi
         ./scripts/feeds update -a
         cd .. 
         [ -e patch ] && cp -rf patch/diy/*.patch $SOURCE_NAME
@@ -160,10 +168,17 @@ jobs:
     
     - name: 编译源码
       id: compile
+      timeout-minutes: 140
       run: |
         cd $SOURCE_NAME
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        # 增加磁盘空间检查，避免编译中途空间不足
+        FREE_GB=$(df -P /workdir | awk 'NR==2 {print $4/1024/1024}')
+        if (( $(echo "$FREE_GB < 10" | bc -l) )); then
+          echo "Error: 磁盘空间不足" && exit 1
+        fi
+        CORES=$(( $(nproc) - 1 ))
+        echo -e "$CORES 线程编译"
+        make -j$CORES V=s || make -j1 V=s
 
     - name: 查看磁盘使用情况
       if: (!cancelled())
