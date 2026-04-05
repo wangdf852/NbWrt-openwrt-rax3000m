@@ -17,7 +17,7 @@ on:
       CUSTOM_PLUGINS:
         description: '自定义插件名称，用空格分隔'
         required: false
-        default: 'luci-theme-aurora luci-app-ttyd luci-app-diskman luci-app-momo'
+        default: 'luci-theme-argon luci-app-ttyd luci-app-diskman luci-app-momo'
         type: string
 
 env:
@@ -29,14 +29,11 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        device: ["rax3000m"]
+        device: ["rax3000m-nand"]  # 只保留 NAND
         source: ["openwrt"]
         include:
-          - device: "rax3000m"
-            config: "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m=y"
-          - device: "rax3000m-nand"
+          - device: "rax3000m-nand"  # 只保留 NAND
             config: "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-nand=y"
-
 
     steps: 
     - name: 检查分支
@@ -143,6 +140,7 @@ jobs:
         EOF
         
         [ -e config ] && cat config/config-common >> $SOURCE_NAME/.config
+        [ -e config ] && cat config/config-apk >> $SOURCE_NAME/.config  # 自动加载你的插件配置
         
         sed -i "s/192.168.1.1/${{ github.event.inputs.OP_IP }}/" $SOURCE_NAME/package/base-files/files/bin/config_generate
         
